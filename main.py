@@ -1,5 +1,6 @@
 import paramiko
-import os from dotenv import  load_dotenv
+import os
+from dotenv import load_dotenv
 
 SFTP_HOST= os.getenv('SFTP_HOST')
 SFTP_USER= os.getenv('SFTP_USER')
