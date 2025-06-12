@@ -383,8 +383,11 @@ import json
 import os
 import csv
 from collections import defaultdict
-from datetime import datetime, timezone
+import random
+import string
 import time
+from datetime import datetime
+from textwrap import indent
 
 import paramiko
 import platform
@@ -620,15 +623,40 @@ class InvoiceDataProcessor:
 
         return payload
 
+    def fetch_vendors(self):
+        get_url = "https://xrp-flex-partners.cegid.cloud/lebeltechnologies_23r2/entity/DefaultExtended/23.200.001/Vendor"
+        get_headers = {
+            'Authorization': f'Bearer {self.token}',
+            'Accept': 'application/json'
+        }
+
+        response = requests.get(get_url, headers=get_headers)
+
+        if response.status_code != 200:
+            print("Failed to fetch vendors:", response.text)
+            exit()
+
+        vendors = response.json()
+        vendor_list = []
+
+        for vendor in vendors:
+            # print(json.dumps(vendor, indent=4))
+            # Create a set of vendor references for easy lookup
+            legal_name = vendor.get("LegalName", {}).get("value", "")
+            vendor_list.append(legal_name)
+        print(vendor_list)
+        return vendor_list
+
     def process_invoices(self):
         """Process invoices and send API requests."""
+        global ref_facture
         if not self.data_table:
             self.add_error("No data to process")
             return False
 
-        processed_vendors = set()  # Track already processed VendorRefs
+        processed_vendors = processor.fetch_vendors()
         invoices_by_number = defaultdict(list)  # Group invoices by Numéro Facture
-
+        characters = string.ascii_letters + string.digits
         # Group the invoices by Numéro Facture
         for invoice in self.data_table:
             num_facture = invoice['Numéro Facture']
@@ -639,27 +667,25 @@ class InvoiceDataProcessor:
             first_invoice = invoices[0]  # Use the first invoice to get common fields
             vendor_ref = first_invoice['Code Fournisseur']
 
-            if vendor_ref in processed_vendors:
-                print(f"Invoice for VendorRef {vendor_ref} has already been processed. Skipping.")
-                continue
+            # if vendor_ref not in processed_vendors:
+            #     print(f"Invoice for VendorRef {vendor_ref} not exist.")
+            #     continue
 
+            # Create payload using the combined details from grouped invoices
             details = []
-
-            # Extract date from the first invoice
-            invoice_date = first_invoice['Date de facture']  # Ensure it's in the correct format
-
-            # Create details from all invoices in the group
             for invoice in invoices:
                 quantity = float(invoice.get('Quantité', 0))
                 unit_cost = float(invoice.get('Coût Unitaire', 0))
+                ref_facture = invoice.get('Numéro Facture', 0)
                 extended_cost = quantity * unit_cost
-
+                date = invoice.get('Date de facture', 0)
+                date_object = datetime.strptime(date, "%d/%m/%Y")
                 detail = {
                     "Branch": {"value": "LT"},
                     "InventoryID": {"value": "AT"},
                     "TransactionDescription": {"value": invoice.get('Désignation', "Prestation de service")},
                     "Qty": {"value": quantity},
-                    "UOM": {"value": invoice.get('Unité', "JOUR")},
+                    "UOM": {"value": "JOUR"},
                     "UnitCost": {"value": unit_cost},
                     "ExtendedCost": {"value": extended_cost},
                     "CalculateDiscountsOnImport": {},
@@ -671,22 +697,22 @@ class InvoiceDataProcessor:
                     "NonBillable": {"value": False},
                     "TaxCategory": {"value": "2000"},
                 }
-                details.append(detail)
+                details.append(detail)  # Collect details for this invoice
 
             # Construct the complete payload
             payload = {
                 "Type": {"value": "Bill"},
                 "Status": {"value": "On Hold"},
-                "Date": {"value": invoice_date},  # Use the date from the first invoice
+                "Date": {"value": date_object.strftime("%Y-%m-%dT00:00:00Z")},
                 "PostPeriod": {"value": "062025"},  # Adjust as necessary
-                "VendorRef": {"value": vendor_ref},  # Use common vendor code
+                "VendorRef": {"value": ref_facture},  # Use common vendor code
                 "Description": {"value": first_invoice.get('Désignation')},  # Use the first invoice's description
                 "ApprovedForPayment": {"value": False},
                 "Vendor": {"value": "EL ROBRINI"},  # Adjust this as necessary
                 "Hold": {"value": True},
-                "Details": details  # Freshly created list of details for the payload
+                "Details": details
             }
-
+            print(payload, indent=0)
             # Send API request
             put_response = requests.put(
                 "https://xrp-flex-partners.cegid.cloud/lebeltechnologies_23r2/entity/DefaultExtended/23.200.001/Bill",
@@ -696,13 +722,11 @@ class InvoiceDataProcessor:
                 },
                 data=json.dumps(payload)
             )
-
             if put_response.status_code == 200:
                 print(f"Successfully processed invoice {num_facture}")
-                processed_vendors.add(vendor_ref)
             else:
                 print(put_response.status_code)
-                # Error handling as needed
+                print(put_response.text)
                 pass
 
         return True
@@ -720,10 +744,9 @@ if __name__ == "__main__":
     while True:
         # Read and process the file
         success = processor.read_and_process_file()
-
         if success:
             print("Data processing successful!")
-            processor.print_all_rows()
+            # processor.print_all_rows()
 
             # Process invoices with API calls
             if processor.process_invoices():
